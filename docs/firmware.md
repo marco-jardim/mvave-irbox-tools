@@ -26,6 +26,11 @@ reverse engineering of sibling products), **inferred**.
 | SincoOTA (Android) | No URLs; the user picks a local `.fwsc`. `IR-BOX` is in its device filter. Bundles the JieLi `jl_bt_ota` SDK. BLE OTA service `ae00` / write `ae01` / notify `ae02`. (from app code) |
 | M-UPGRADE (Windows, Qt6) | User picks a local `.fwsc`; no embedded IR Box image (no `JLUFW`/`@JMUA` magic in the binary). Its shipped developer log shows only FM-1, MK300, URM-1000 and SC791FEMXGQ updates. (verified / from logs) |
 | CubeSuite (Windows), MidiSuite (Windows) | Contain IR Box UI strings but no firmware image. (verified) |
+| Product page https://www.m-vave.com/product?id=ir-box | Download list is built from `downloads-data.js`. For `ir-box` it offers CubeSuite (PC + mobile) and SincoOTA only. There is no firmware entry and no `pc-firmware` item that supports `ir-box`. Manual: `manualf.oss-cn-hongkong.aliyuncs.com/manual/IRBOX/IRBOX_ZE.pdf`. (verified) |
+| Internet Archive: download page | Snapshots 2026-05-02 and 2026-08-30 (`downloads-data.js`) list IRBOX/IMPULSE-R only as devices supported by CubeSuite/SincoOTA. Firmware lists contain no IR Box. (verified) |
+| Internet Archive: OSS bucket | 48 archived URLs under `software/firmware/` (2024-07 → 2026-09), including older versions such as `FootCtrlPlus_009..013`, `SMK-37 Pro_012..015` and release-note `.txt` files. **None for IR Box, IMPULSE-R or Cube Baby.** (verified) |
+| Internet Archive: legacy app server `47.107.244.214:7080` | Archived directory listings (2024-03): `/resources/APP/Firmware/` (19 `.ufw`: CubeTurner, FootCtrl, LooperDrum*, LooperAutoX, LooperMini, LooperPro*, MidiPortA/B, RJMICRO25, SMC-Mixer, SMK25*, TurnerPro, minikey25), `/FirmwareChaos/` (MidiPortB_035) and `/TestFirmware/` (FootCtrl_032, LooperDrum_001/002/030, MidiPortA_035, MidiPortB_035, SMK25_055/056). **No IR Box.** (verified) |
+| community.m-vave.com | Vue SPA; downloads go through `/bbs/api/software?file=`. `IRBOX.zip`, `IR-BOX.zip`, `IMPULSE-R.zip` and `IRBOX.fwsc` return 404. Archived files are PC editors and manuals for other products only. No IR Box firmware thread was found. (verified) |
 
 ## Update tooling and container (sibling products)
 
@@ -84,6 +89,17 @@ see from the outside are:
 | Unsupported query commands 0x13/0x17/0x1B/0x20 give no reply (no NAK) | Firmware |
 | Out-of-map reads return stale buffers instead of an error | Firmware. The toolkit validates addresses instead. |
 | BLE not seen advertising on Windows | Unknown. Possibly needs pairing mode, or is disabled while USB is connected. |
+
+## Factory reset (from the manual)
+
+The manual says factory settings can be restored "in the computer software"
+(CubeSuite for Windows/macOS). This implies the firmware keeps factory presets
+(names, IRs, EQ) somewhere on the device, separate from the 32 user slots. The
+command is not in the Android app code and has not been located in the Windows
+CubeSuite binary yet. Locating it would allow recovering the original factory IRs
+of slots 1–14, which differ from the manual on this unit (see
+[hardware.md](hardware.md)). Sending it would overwrite all 32 slots, so take a
+`backup` first.
 
 ## Next steps if firmware work is wanted
 

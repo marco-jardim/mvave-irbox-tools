@@ -33,6 +33,35 @@ Consequences:
   stages (**inferred**: the knob does not change the byte, and the byte changes
   the level).
 
+### What the official manual adds
+
+Source: user manual `IRBOX_ZE.pdf` (EN rev. April 19, 2024; CN rev. July 5, 2024),
+https://manualf.oss-cn-hongkong.aliyuncs.com/manual/IRBOX/IRBOX_ZE.pdf (**from manual**).
+
+| Item | Manual says | Consistent with our probing? |
+|---|---|---|
+| LOW CUT knob | **Global** high-pass, 30 Hz (fully CCW) to 360 Hz (fully CW), applies to all 32 presets | Yes: global, so it is not part of any preset block |
+| HI CUT knob | **Global** low-pass, 18 kHz (CCW) to 1 kHz (CW) | Yes |
+| VOL knob | Total output volume; "external audio volume through USB input is uncontrollable" | Yes: separate from the per-preset volume byte. USB playback is mixed in after the knob. |
+| Buttons | − / + step presets; both together toggle bypass; display shows `01`–`32` or `bp` | Yes (bypass is not visible in memory) |
+| IR format | WAV 44.1 kHz, 24-bit, **2048 samples** | Yes (exact match) |
+| EQ | 9 bands: high/low cut + 7 "standard" bands, 30 Hz–18 kHz, ±12 dB | Matches the 9 enable bits. The app maps them as HPF, low shelf, 5 peaks, high shelf, LPF. |
+| IR module volume | "0–100" in the software | App and device use a byte 0–127 (factory values up to 127). The manual's range is a UI convention, not the wire range. |
+| Factory reset | "enter the computer software to restore the factory settings" | Not yet located in the protocol. Implies factory content is kept on the device. |
+| Bluetooth | Phone app: scan, select "IR-BOX", pair. BT is control only, no audio. | BLE exists. It was not seen advertising on Windows, possibly because it was busy or USB-connected (**inferred**). |
+| Power | DC 9 V (center negative) or USB-C 5 V; 80 mA @ 9 V, 120 mA @ 5 V | — |
+| I/O | 1/4" TS in (1 MΩ), 1/4" TS out (1 kΩ), XLR balanced out (1 kΩ), 1/8" TRS headphones (22 Ω) | — |
+
+Factory preset list per the manual: 1–25 guitar cabs (1 TweedDeluxe, 2
+ShowmanD130s, 3 JC120, 4–8 Marshall variants, 9 Bogner, 10 ENGL, 11 Peavey 5150,
+12–13 Twin, 14–15 Vox AC30, 16 Twin off-axis, 17 Showman U47, 18 Orange, 19 Diezel,
+20 Mesa Boogie, 21 Electrovoice, 22 Rimental, 23 Supro 1x15, 24 Matchless ES212,
+25 Mesa Rectifier) and 26–32 bass cabs. **On this unit, slots 1–14 differ from the
+manual** (bass cabs EBS, Hartke, TC Electronic, Ampeg, Sunn, Mesa, ElectroVoice,
+Orange, Celestion, plus "Null Cab Mono/Stereo"). Slots 15–32 match. Slots 1–14
+were therefore replaced at some point, either by a previous owner/user or by a
+different factory batch (**inferred**).
+
 ## 2. USB audio interface
 
 | Item | Value | Source |
