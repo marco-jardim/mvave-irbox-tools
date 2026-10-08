@@ -1,0 +1,23 @@
+[project]
+name = "mvave-irbox-tools"
+version = "0.1.0"
+description = "USB-MIDI editor (and read-only BLE tools) for the M-VAVE IR Box cab-sim pedal"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = ["bleak", "numpy>=2.4.6", "python-rtmidi>=1.5"]
+
+[project.optional-dependencies]
+measure = [
+    "sounddevice>=0.5.6",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["scripts"]
+
+[tool.uv]
+package = false
