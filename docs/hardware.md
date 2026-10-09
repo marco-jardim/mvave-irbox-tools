@@ -62,6 +62,31 @@ Orange, Celestion, plus "Null Cab Mono/Stereo"). Slots 15–32 match. Slots 1–
 were therefore replaced at some point, either by a previous owner/user or by a
 different factory batch (**inferred**).
 
+### Inside the unit (FCC internal photos)
+
+Source: FCC ID **2ARCP-IRBOX**, grantee Sinco Intelligent Technology Co., Ltd.
+(grantee code 2ARCP). Internal-photo exhibits:
+https://fccid.io/2ARCP-IRBOX/Internal-Photos/Internal-Photo-8010032.pdf (2025-01-23)
+and https://fccid.io/2ARCP-IR-BOX/Internal-Photos/Internal-Photos-7463309 (2024-07-09).
+The photos were taken by the test lab. Markings below were read from enlarged
+crops (**from FCC photos**).
+
+| Board | Silkscreen | Parts seen |
+|---|---|---|
+| Control / display board | `SK14_DB_V05` | **Main SoC: JieLi** (`JL` logo). Second line reads `BP1Y35B-65C4` (the `B` could be an `8`). Roughly 32-pin QFP, next to a crystal. The **BT/BLE antenna** is a red wire soldered next to it. Also on this board: the 2-digit LED display, 3 pots, − / + buttons, and a pin header to the main board. |
+| Main / audio board | `SK14_MB_V06` | Two MSOP-8 parts marked `SGM…`/`YPM51…`/`2204C`: SGMICRO dual op-amps, part number not fully legible (**inferred**: analog input/output stages). Also an unreadable SOIC/TSSOP-16, another 8-pin IC, the 1/4" jacks, XLR, DC jack, USB-C and the headphone jack. |
+
+Notes:
+- JieLi prints a lot/date code, not the part number. On the FM-1 / SMK-37 Pro
+  (AC7911B), the code ends in `-11B8`.
+- By analogy, the IR Box's `-65C4` suffix and the JieLi chip families listed in
+  the official SincoOTA updater (692x/693x/695x/696x) point to a part of the
+  **AC696x** Bluetooth-audio family. This is **inferred and not confirmed**; a
+  photo of the actual chip or a chip-ID query would settle it.
+- The SoC sits on the small control board with the BLE antenna. The main board
+  is analog front end, power and connectors. DSP, USB audio/MIDI and BLE are all
+  in the JieLi part.
+
 ## 2. USB audio interface
 
 | Item | Value | Source |

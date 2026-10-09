@@ -66,6 +66,15 @@ likely applies to the IR Box.
   access needs a hardware USB-key dongle, e.g. RP2040-based ones (see
   `ip2k/mvave-fm1-open-firmware`, `kurogedelic/FM-1-transporter`). (community)
 
+## Chip
+
+FCC internal photos (FCC ID 2ARCP-IRBOX) show a **JieLi** SoC marked `JL` /
+`BP1Y35B-65C4` on the control board. That confirms the JieLi family; the exact
+part (likely AC696x) is inferred. See [hardware.md](hardware.md#inside-the-unit-fcc-internal-photos).
+JieLi's public GitHub (Jieli-Tech) publishes SDKs for AC63x, AD14–AD18 and AW30/31,
+but not for AC69x/AC79x. A chip SDK would not contain the IR Box application
+anyway: that is M-VAVE's product firmware.
+
 ## Reading the firmware from the device
 
 - Protocol region types 0–3 (NOR, NAND, SD, EFF) and 6–7 answer every read with
