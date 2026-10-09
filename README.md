@@ -200,6 +200,7 @@ app's converter has known bugs: 16-bit IRs end up about 48 dB too quiet, and
 | [docs/probing-log.md](docs/probing-log.md) | Dated log of the device probing sessions |
 | [docs/apk-analysis.md](docs/apk-analysis.md) | How the protocol was recovered from the official app, and the app's converter bugs |
 | [docs/firmware.md](docs/firmware.md) | Firmware search results, update tooling and `.fwsc` container, chip, fix opportunities |
+| [docs/flash-dump.md](docs/flash-dump.md) | Runbook for a read-only flash dump via JieLi USB download mode (not performed) |
 
 ## License
 
