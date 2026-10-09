@@ -348,3 +348,20 @@ Conclusions (**verified on device**):
   - `restore --slot 32` brought the slot back. A full 32-slot re-dump was then byte-identical to the original backup taken before any flash write.
 - Deviations from docs/protocol.md: none.
 - Follow-ups: BLE transport still untested on hardware (the unit does not advertise to Windows).
+
+## 2026-10-08 — Factory image found and slots 1–14 restored
+
+- Command run:
+  - `factory-restore`-equivalent `restore dumps/factory_BOR --slot 1..14 --yes` (auto-backup `backups/20261008-205252`)
+  - raw read of type 5 `0x70000000`…`0x7003FFFF`
+  - `factory-list BOR.bin --compare`
+  - `backup --raw`
+- Trace file: `captures/factory_restore.jsonl`, `captures/raw_flash_read.jsonl`
+- Observations (verified on device):
+  - CubeSuite for Windows "Restore all factory IR" = erase 64 sectors at type 5 `0x70000000` and write `bin/BOR.bin` (256 KiB) there. Found by static analysis, never executed.
+  - The window is readable. The full 256 KiB matched the select-based backup byte for byte.
+  - BOR.bin slots 15–32 were already identical to the unit. Slots 1–14 differed (custom bass cabs) and were restored through the save path.
+  - Afterwards, all 32 slots in raw flash are identical to BOR.bin.
+  - `backup --raw` takes about 8 s, against about 60 s for the select-based backup.
+- Deviations from docs/protocol.md: new region, documented in the addendum.
+- Follow-ups: none.

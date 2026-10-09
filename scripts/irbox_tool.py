@@ -4,23 +4,26 @@ Slot numbers are 1..32, as shown on the pedal display. The protocol uses
 0-based indices (0..31) internally; this tool converts for you.
 
 Commands by effect:
-  read-only      midi-ports, scan (BLE), query, info, dump, backup, ir-export
+  read-only      midi-ports, scan (BLE), query, info, dump, backup, ir-export,
+                 factory-list (offline unless --compare)
   working copy   select, volume, cab, eq, eq-band, ir-load
                  (changes are audible at once but NOT saved: they are lost when
                  another slot is selected or the pedal is power-cycled)
-  flash          save, rename, ir-upload, restore
+  flash          save, rename, ir-upload, restore, factory-restore
                  (persistent; require --yes, otherwise the plan is printed and
                  the tool exits with status 2; an automatic backup of all 32
                  slots is written to backups/<timestamp>/ unless --no-backup)
 
-The erase command and the BLE OTA characteristics are never used, and no
-command sends arbitrary frames.
+The erase command and the BLE OTA characteristics are never used, the raw
+flash window (type 5 0x70000000) is only ever read, and no command sends
+arbitrary frames.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -38,8 +41,10 @@ from irbox.device import (
     DEFAULT_READ_CHUNK,
     MAX_READ_CHUNK,
     NUM_SLOTS,
+    RAW_FLASH_LEN,
     IRBox,
     load_backup,
+    load_factory_image,
 )
 from irbox.ir_convert import (
     CHANNEL_MODES,
@@ -62,11 +67,17 @@ from irbox.model import (
     EQ_ON_OFFSET,
     EQ_Q_MAX,
     EQ_Q_MIN,
+    HEADER_LEN,
+    IR_BLOCK_OFFSET,
+    IR_END,
+    IR_OFFSET,
     IR_RATE,
     IR_SAMPLES,
+    LEVEL_OFFSET,
     NAME_MAX_CHARS,
     NAME_STRIDE,
     NAME_TABLE_LEN,
+    PATCH_MAGIC_OFFSET,
     PRESET_LEN,
     VOLUME_MAX,
     EqBandState,
@@ -75,6 +86,7 @@ from irbox.model import (
     name_from_field,
     parse_name_table,
     parse_preset,
+    preset_ranges_equal,
     preset_to_dict,
 )
 from irbox.protocol import TYPE_DEV, TYPE_USR
@@ -88,6 +100,12 @@ EXIT_ERROR = 1
 EXIT_REFUSED = 2
 
 SLOT_HELP = "slot number 1-32 as shown on the pedal display (protocol index = N-1)"
+
+IMAGE_HELP = (
+    "factory image: the file bin/BOR.bin from the official M-VAVE CubeSuite for Windows/macOS "
+    f"({RAW_FLASH_LEN} bytes = {NUM_SLOTS} x {PRESET_LEN}-byte presets). The file is not "
+    "redistributed by this project; take it from your own CubeSuite installation"
+)
 
 
 class UsageError(Exception):
@@ -256,11 +274,34 @@ def build_parser() -> argparse.ArgumentParser:
 
     b = sub.add_parser(
         "backup",
-        help="[read-only] save all 32 slots to DIR (selects each slot, then restores the active one)",
+        help="[read-only] save all 32 slots to DIR (selects each slot, then restores the active one; "
+        "--raw reads the raw flash without switching slots)",
         description="Back up all 32 slots. Files slot_00.bin..slot_31.bin use the 0-based protocol "
-        "index (slot_00.bin = display slot 1). The active slot and its unsaved changes are restored.",
+        "index (slot_00.bin = display slot 1). By default each slot is selected and read; the active "
+        "slot and its unsaved changes are restored. With --raw the stored presets are read from the "
+        "raw flash window instead (type 5 0x70000000, read-only): faster, no slot switching, the "
+        "working copy is not touched. Both produce the same file format.",
     )
     b.add_argument("dir", help="output directory (must not already contain a backup)")
+    b.add_argument(
+        "--raw",
+        action="store_true",
+        help="read the raw flash window (fast, no slot switching) instead of selecting each slot",
+    )
+
+    fl = sub.add_parser(
+        "factory-list",
+        help="[read-only] list the 32 presets of a factory image (offline; --compare also reads the device)",
+        description="List slot 1-32 names, cab/eq state and volume from a factory image. Offline: "
+        "the device is not opened unless --compare is given. With --compare the device's raw flash "
+        "window is read (read-only, no slot switching) and each slot is marked IDENTICAL or differs.",
+    )
+    fl.add_argument("image", metavar="IMAGE", help=IMAGE_HELP)
+    fl.add_argument(
+        "--compare",
+        action="store_true",
+        help="read the device's raw flash (read-only) and mark each slot IDENTICAL or differs",
+    )
 
     x = sub.add_parser(
         "ir-export",
@@ -349,6 +390,27 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("dir", help="backup directory")
     rs.add_argument("--slot", type=slot_arg, nargs="+", action="extend", help=SLOT_HELP + "; repeatable")
     _add_flash_options(rs)
+
+    fr = sub.add_parser(
+        "factory-restore",
+        help="[flash] restore slots from a factory image (default: every slot that differs from it)",
+        description="Restore factory presets from IMAGE (bin/BOR.bin from the official M-VAVE "
+        "CubeSuite for Windows/macOS; not redistributed by this project). Uses the same verified path "
+        "as 'restore': select, write header/IR/EQ to the working copy, apply, save, reload and compare; "
+        "afterwards the restored slots are read from the raw flash window and compared with the image. "
+        "Without --slot the device's raw flash is read first (read-only) and only slots whose header, "
+        "IR or EQ differ from the image are restored. The erase command and raw flash writes used by "
+        "CubeSuite's 'Restore all factory IR' are never sent.",
+    )
+    fr.add_argument("image", metavar="IMAGE", help=IMAGE_HELP)
+    fr.add_argument(
+        "--slot",
+        type=slot_arg,
+        nargs="+",
+        action="extend",
+        help=SLOT_HELP + "; repeatable (default: every slot whose header, IR or EQ differs from the image)",
+    )
+    _add_flash_options(fr)
     return p
 
 
@@ -558,8 +620,86 @@ def cmd_dump(args: argparse.Namespace) -> int:
 
 def cmd_backup(args: argparse.Namespace) -> int:
     with open_device(args) as box:
-        result = box.backup(Path(args.dir))
-    print(f"backup of {NUM_SLOTS} slots written to {result.path}; active slot {display_slot(result.active_slot)} restored")
+        result = box.backup(Path(args.dir), raw=args.raw)
+    if args.raw:
+        print(f"backup of {NUM_SLOTS} slots written to {result.path} (raw flash read, no slot switching; "
+              f"active slot {display_slot(result.active_slot)} untouched)")
+    else:
+        print(f"backup of {NUM_SLOTS} slots written to {result.path}; "
+              f"active slot {display_slot(result.active_slot)} restored")
+    return EXIT_OK
+
+
+# Byte ranges reported by 'factory-list --compare' (labels may repeat).
+_COMPARE_FIELDS: tuple[tuple[str, int, int], ...] = (
+    ("name", 0, NAME_STRIDE),
+    ("cab on/off", CAB_ON_OFFSET, CAB_ON_OFFSET + 1),
+    ("eq on/off", EQ_ON_OFFSET, EQ_ON_OFFSET + 1),
+    ("magic", PATCH_MAGIC_OFFSET, HEADER_LEN),
+    ("magic", IR_BLOCK_OFFSET, IR_BLOCK_OFFSET + 4),
+    ("cab name/type", IR_BLOCK_OFFSET + 4, LEVEL_OFFSET),
+    ("volume", LEVEL_OFFSET, LEVEL_OFFSET + 1),
+    ("IR", IR_OFFSET, IR_END),
+    ("EQ", EQ_OFFSET, EQ_END),
+)
+
+
+def _compare_status(image_block: bytes, device_block: bytes) -> str:
+    """IDENTICAL, or which parts of the device's stored preset differ from the image."""
+    if image_block == device_block:
+        return "IDENTICAL"
+    parts: list[str] = []
+    for label, lo, hi in _COMPARE_FIELDS:
+        if image_block[lo:hi] != device_block[lo:hi] and label not in parts:
+            parts.append(label)
+    other = (
+        image_block[IR_END:EQ_OFFSET] != device_block[IR_END:EQ_OFFSET]
+        or image_block[EQ_END:] != device_block[EQ_END:]
+    )
+    if not parts:
+        return "same preset (only bytes outside header/IR/EQ differ)"
+    if other:
+        parts.append("other bytes")
+    return "differs: " + ", ".join(parts)
+
+
+def _differing_slots(image: dict[int, bytes], device: dict[int, bytes]) -> list[int]:
+    """0-based slots whose header, IR block or EQ differ (what a restore can change)."""
+    return [s for s in range(NUM_SLOTS) if not preset_ranges_equal(image[s], device[s])]
+
+
+def _image_label(path: str) -> str:
+    digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    return f"{path} (sha256 {digest[:16]})"
+
+
+def _quoted_name(block: bytes) -> str:
+    """Stored name in quotes (leading spaces are part of some factory names), or '-'."""
+    name = name_from_field(block[:NAME_STRIDE])
+    return repr(name) if name is not None else "-"
+
+
+def cmd_factory_list(args: argparse.Namespace) -> int:
+    image = load_factory_image(args.image)
+    device: dict[int, bytes] | None = None
+    if args.compare:
+        with open_device(args) as box:
+            device = box.read_raw_flash()
+    print(f"factory image {_image_label(args.image)}:")
+    for slot in range(NUM_SLOTS):
+        block = image[slot]
+        line = (
+            f"  {display_slot(slot):2d}: {_quoted_name(block):<18}  cab {_on_off(block[CAB_ON_OFFSET]):<3}  "
+            f"eq {_on_off(block[EQ_ON_OFFSET]):<3}  volume {block[LEVEL_OFFSET]:3d}"
+        )
+        if device is not None:
+            line += f"  {_compare_status(block, device[slot])}"
+        print(line)
+    if device is not None:
+        differ = _differing_slots(image, device)
+        same = sum(1 for s in range(NUM_SLOTS) if image[s] == device[s])
+        print(f"{same} slot(s) IDENTICAL; header/IR/EQ differ in {len(differ)} slot(s)"
+              + (f": {[display_slot(s) for s in differ]}" if differ else ""))
     return EXIT_OK
 
 
@@ -724,12 +864,59 @@ def cmd_restore(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _factory_steps(image: dict[int, bytes], targets: list[int]) -> list[str]:
+    steps = [
+        f"slot {display_slot(s)}: select, write header/IR/EQ from the factory image, apply, save to flash, "
+        f"verify ({_quoted_name(image[s])})"
+        for s in targets
+    ]
+    steps.append("re-select the originally active slot (unsaved changes of the active slot are discarded)")
+    steps.append("read the restored slots from the raw flash window (read-only) and compare them with the image")
+    return steps
+
+
+def _factory_restore(args: argparse.Namespace, box: IRBox, image: dict[int, bytes], targets: list[int]) -> int:
+    _auto_backup(args, box)
+    done = box.restore_blocks(image, targets, source=f"factory image {args.image}")
+    box.verify_raw_flash(image, done)
+    print(f"restored slot(s) {[display_slot(s) for s in done]} from factory image {args.image}; "
+          "raw flash matches the image (header, IR, EQ)")
+    return EXIT_OK
+
+
+def cmd_factory_restore(args: argparse.Namespace) -> int:
+    image = load_factory_image(args.image)
+    print(f"factory image {_image_label(args.image)}")
+    if args.slot:
+        targets = sorted(set(args.slot))
+        if not _confirm(args, _factory_steps(image, targets)):
+            return EXIT_REFUSED
+        with open_device(args) as box:
+            return _factory_restore(args, box, image, targets)
+    with open_device(args) as box:
+        print(f"reading the raw flash of all {NUM_SLOTS} slots (read-only) to find slots that differ ...")
+        device = box.read_raw_flash()
+        targets = _differing_slots(image, device)
+        other = [s for s in range(NUM_SLOTS) if s not in targets and image[s] != device[s]]
+        if other:
+            print(f"note: slot(s) {[display_slot(s) for s in other]} match the image in header, IR and EQ; "
+                  "only other bytes differ, which a restore does not change; skipped")
+        if not targets:
+            print("every slot already matches the factory image in header, IR and EQ; nothing to restore")
+            return EXIT_OK
+        print(f"slot(s) that differ from the factory image: {[display_slot(s) for s in targets]}")
+        if not _confirm(args, _factory_steps(image, targets)):
+            return EXIT_REFUSED
+        return _factory_restore(args, box, image, targets)
+
+
 HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "midi-ports": cmd_midi_ports,
     "query": cmd_query,
     "info": cmd_info,
     "dump": cmd_dump,
     "backup": cmd_backup,
+    "factory-list": cmd_factory_list,
     "ir-export": cmd_ir_export,
     "select": cmd_select,
     "volume": cmd_volume,
@@ -741,6 +928,7 @@ HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "rename": cmd_rename,
     "ir-upload": cmd_ir_upload,
     "restore": cmd_restore,
+    "factory-restore": cmd_factory_restore,
 }
 
 

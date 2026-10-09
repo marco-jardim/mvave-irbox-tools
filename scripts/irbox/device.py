@@ -15,9 +15,15 @@ Memory model (verified on firmware ``IR-BOX_010``):
   flash slot ``i``.
 * type 5 ``0x80000000`` is the 544-byte name table. It ignores the address
   offset, so it must be read in a single request.
+* type 5 ``0x70000000 + i * 8192`` (``i`` = 0..31, up to ``0x7003FFFF``) is the
+  raw flash of the 32 stored presets, 8192 bytes each, same layout as the
+  working copy. Reading it (up to 1000 bytes per request) neither selects a
+  slot nor touches the working copy. This toolkit only ever *reads* it.
 
-Writes are restricted to an allowlist (:func:`check_write_target`); the
-erase command 0x21 is refused by the transport's ``guard_frame``.
+Writes are restricted to an allowlist (:func:`check_write_target`) that does
+not include the raw flash window; the erase command 0x21 is refused by the
+transport's ``guard_frame``. Restores always go through the working copy and
+the save command (:meth:`IRBox.restore_blocks`).
 """
 
 from __future__ import annotations
@@ -26,8 +32,8 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -73,12 +79,16 @@ from .protocol import (
 __all__ = [
     "ADDR_CURRENT_SLOT",
     "ADDR_NAME_TABLE",
+    "ADDR_RAW_FLASH",
     "ADDR_REFRESH",
     "ADDR_SAVE_BASE",
     "ADDR_SELECT_BASE",
+    "BACKUP_METHOD_RAW",
+    "BACKUP_METHOD_SELECT",
     "DEFAULT_READ_CHUNK",
     "MAX_READ_CHUNK",
     "NUM_SLOTS",
+    "RAW_FLASH_LEN",
     "REFRESH_EQ",
     "REFRESH_IR",
     "REFRESH_VOLUME",
@@ -90,6 +100,7 @@ __all__ = [
     "check_slot",
     "check_write_target",
     "load_backup",
+    "load_factory_image",
 ]
 
 log = logging.getLogger("irbox.device")
@@ -101,6 +112,8 @@ ADDR_SELECT_BASE = 0xE0000000  # type 4, + slot index, data [index]
 ADDR_NAME_TABLE = 0x80000000  # type 5, 544 bytes, one request
 ADDR_REFRESH = 0xA0000000  # type 5, data [mode]
 ADDR_SAVE_BASE = 0xF0000000  # type 5, + slot index, data [0]
+ADDR_RAW_FLASH = 0x70000000  # type 5, + slot index * 8192; READ-ONLY here, never written
+RAW_FLASH_LEN = NUM_SLOTS * PRESET_LEN  # 262144 bytes, also the size of a factory image
 
 REFRESH_IR = 1  # IR block, cab_on, eq_on
 REFRESH_EQ = 2  # EQ band parameters and enable bits
@@ -114,6 +127,8 @@ SAVE_SETTLE_S = 0.5
 
 BACKUP_FORMAT = "irbox-backup"
 BACKUP_VERSION = 1
+BACKUP_METHOD_SELECT = "select"  # select each slot, read its working copy
+BACKUP_METHOD_RAW = "raw-flash"  # read the raw flash window, no slot switching
 
 
 class DeviceError(RuntimeError):
@@ -181,6 +196,7 @@ class BackupResult:
     active_slot: int
     names: list[str | None]
     files: list[Path] = field(default_factory=list)
+    method: str = BACKUP_METHOD_SELECT
 
 
 def _slot_file(slot: int) -> str:
@@ -226,6 +242,38 @@ def load_backup(src: str | Path) -> dict[int, bytes]:
         blocks[slot] = data
     if not blocks:
         raise ValueError(f"no slot_NN.bin files found in {d}")
+    return blocks
+
+
+def load_factory_image(path: str | Path) -> dict[int, bytes]:
+    """Load and validate a 32-slot factory image; returns ``{0-based index: block}``.
+
+    The image (``bin/BOR.bin`` of the official CubeSuite, not shipped with this
+    project) has the raw flash layout: slot ``i`` at offset ``i * 8192``. It
+    must be exactly 262144 bytes and every block needs ``'patch'`` at offset
+    19 and ``'CAB\\0'`` at offset 24.
+    """
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"factory image {p} not found")
+    size = p.stat().st_size
+    if size != RAW_FLASH_LEN:
+        raise ValueError(
+            f"{p}: a factory image must be {RAW_FLASH_LEN} bytes "
+            f"({NUM_SLOTS} x {PRESET_LEN}), got {size}"
+        )
+    data = p.read_bytes()
+    if len(data) != RAW_FLASH_LEN:
+        raise ValueError(f"{p}: read {len(data)} bytes, expected {RAW_FLASH_LEN}")
+    blocks: dict[int, bytes] = {}
+    for slot in range(NUM_SLOTS):
+        off = slot * PRESET_LEN
+        block = data[off : off + PRESET_LEN]
+        try:
+            check_preset_block(block)
+        except ValueError as e:
+            raise ValueError(f"{p}: slot {slot + 1} (offset 0x{off:05X}): {e}") from e
+        blocks[slot] = block
     return blocks
 
 
@@ -305,6 +353,53 @@ class IRBox:
 
     def volume(self) -> int:
         return self.read_range(LEVEL_OFFSET, 1)[0]
+
+    def _read_raw_slot(self, slot: int) -> bytes:
+        check_slot(slot)
+        addr = ADDR_RAW_FLASH + slot * PRESET_LEN
+        data = self._t.read(TYPE_USR, addr, PRESET_LEN, chunk=self.read_chunk, timeout=self.timeout)
+        if len(data) != PRESET_LEN:
+            raise DeviceError(
+                f"raw flash read of slot {slot + 1} returned {len(data)} bytes, expected {PRESET_LEN}"
+            )
+        return data
+
+    def read_raw_flash(self, slots: Iterable[int] | None = None) -> dict[int, bytes]:
+        """Stored preset blocks from the raw flash window, ``{0-based index: 8192 bytes}``.
+
+        Reads type 5 ``0x70000000 + i * 8192`` in ``read_chunk`` (<= 1000)
+        byte requests. Read-only: no slot is selected and the working copy,
+        including unsaved changes, is left alone. Default: all 32 slots.
+        """
+        wanted = list(range(NUM_SLOTS)) if slots is None else list(slots)
+        for slot in wanted:
+            check_slot(slot)
+        return {slot: self._read_raw_slot(slot) for slot in sorted(set(wanted))}
+
+    def verify_raw_flash(
+        self, expected: Mapping[int, bytes], slots: Iterable[int] | None = None
+    ) -> dict[int, bytes]:
+        """Read ``slots`` from the raw flash window and compare header, IR and EQ with ``expected``.
+
+        Raises :class:`DeviceError` on any difference; returns the blocks read.
+        """
+        wanted = sorted(expected) if slots is None else list(slots)
+        for slot in wanted:
+            check_slot(slot)
+        targets = sorted(set(wanted))
+        missing = [s + 1 for s in targets if s not in expected]
+        if missing:
+            raise ValueError(f"no expected data for slot(s) {missing}")
+        got = self.read_raw_flash(targets)
+        bad = {s: preset_range_diffs(expected[s], got[s]) for s in targets}
+        bad = {s: d for s, d in bad.items() if d}
+        if bad:
+            detail = "; ".join(
+                f"slot {s + 1}: {len(d)} byte(s), first offsets {d[:8]}" for s, d in sorted(bad.items())
+            )
+            raise DeviceError(f"raw flash differs from the expected data: {detail}")
+        self._note(f"verified slot(s) {[s + 1 for s in targets]} in the raw flash window")
+        return got
 
     # -- writes ----------------------------------------------------------
     def _write_frame(self, type_: int, addr: int, data: bytes) -> None:
@@ -485,28 +580,44 @@ class IRBox:
             self.select(slot)
             return self.read_preset()
 
-    def backup(self, out_dir: str | Path) -> BackupResult:
+    def backup(self, out_dir: str | Path, *, raw: bool = False) -> BackupResult:
         """Read all 32 slots from flash into ``out_dir``.
 
         Writes ``slot_00.bin`` .. ``slot_31.bin`` (0-based index), ``names.bin``,
         ``working_copy.bin`` (active slot before the backup) and
-        ``manifest.json``. The active slot and its unsaved edits are restored.
+        ``manifest.json``.
+
+        By default every slot is selected and its working copy read; the
+        active slot and its unsaved edits are restored afterwards. With
+        ``raw`` the slots are read from the raw flash window instead
+        (:meth:`read_raw_flash`): faster, no slot is selected and nothing is
+        written to the device. The file format is the same (manifest
+        ``method`` is ``"raw-flash"`` instead of ``"select"``).
         """
         out = Path(out_dir)
         if out.exists() and (any(out.glob("slot_*.bin")) or (out / "manifest.json").exists()):
             raise FileExistsError(f"{out} already contains a backup; choose another directory")
         out.mkdir(parents=True, exist_ok=True)
+        method = BACKUP_METHOD_RAW if raw else BACKUP_METHOD_SELECT
         device = self.device_name()
         names_raw = self.read_name_table()
         (out / "names.bin").write_bytes(names_raw)
         files = [out / "names.bin"]
         entries: list[dict[str, object]] = []
-        with self.preserving_active() as state:
+        guard: AbstractContextManager[ActiveState] = (
+            nullcontext(ActiveState(self.active_slot(), self.read_preset()))
+            if raw
+            else self.preserving_active()
+        )
+        with guard as state:
             (out / "working_copy.bin").write_bytes(state.working)
             files.append(out / "working_copy.bin")
             for slot in range(NUM_SLOTS):
-                self.select(slot)
-                block = self.read_preset()
+                if raw:
+                    block = self._read_raw_slot(slot)
+                else:
+                    self.select(slot)
+                    block = self.read_preset()
                 path = out / _slot_file(slot)
                 path.write_bytes(block)
                 files.append(path)
@@ -526,6 +637,7 @@ class IRBox:
                 "version": BACKUP_VERSION,
                 "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "device": device,
+                "method": method,
                 "slot_numbering": "slot_NN.bin uses the 0-based protocol index; display slot = index + 1",
                 "active_index": state.slot,
                 "active_slot": state.slot + 1,
@@ -535,28 +647,49 @@ class IRBox:
             }
             (out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
             files.append(out / "manifest.json")
-        return BackupResult(out, state.slot, parse_name_table(names_raw), files)
+        return BackupResult(out, state.slot, parse_name_table(names_raw), files, method)
 
     def restore(self, src: str | Path, slots: Iterable[int] | None = None) -> list[int]:
         """Write backed-up slots back to flash; returns the restored indices.
 
+        See :meth:`restore_blocks` for the sequence.
+        """
+        return self.restore_blocks(load_backup(src), slots, source=f"backup {src}")
+
+    def restore_blocks(
+        self,
+        blocks: Mapping[int, bytes],
+        slots: Iterable[int] | None = None,
+        *,
+        source: str = "the given data",
+    ) -> list[int]:
+        """Write preset blocks (``{0-based index: 8192 bytes}``) to flash; returns the restored indices.
+
         For each slot: select, write header, IR block and EQ, refresh 1/2/3,
         save, then verify by reload + readback. The originally active slot is
-        re-selected at the end.
+        re-selected at the end (its unsaved changes are discarded). Only the
+        working copy and the save command are written: no erase, no raw
+        flash writes.
         """
-        blocks = load_backup(src)
-        targets = sorted(blocks) if slots is None else sorted(set(slots))
-        for slot in targets:
+        wanted = sorted(blocks) if slots is None else list(slots)
+        for slot in wanted:
             check_slot(slot)
+        targets = sorted(set(wanted))
         missing = [s + 1 for s in targets if s not in blocks]
         if missing:
-            raise ValueError(f"backup {src} has no data for slot(s) {missing}")
+            raise ValueError(f"{source} has no data for slot(s) {missing}")
+        for slot in targets:
+            try:
+                check_preset_block(blocks[slot])
+            except ValueError as e:
+                raise ValueError(f"{source}, slot {slot + 1}: {e}") from e
         original = self.active_slot()
         try:
             for slot in targets:
-                self._note(f"restoring slot {slot + 1}: {name_from_field(blocks[slot][:NAME_STRIDE]) or '-'}")
+                block = bytes(blocks[slot])
+                self._note(f"restoring slot {slot + 1}: {name_from_field(block[:NAME_STRIDE]) or '-'}")
                 self.select(slot)
-                self.apply_working_copy(blocks[slot])
+                self.apply_working_copy(block)
                 self.save(slot, None, verify=True)
         finally:
             self.select(original)

@@ -90,16 +90,47 @@ see from the outside are:
 | Out-of-map reads return stale buffers instead of an error | Firmware. The toolkit validates addresses instead. |
 | BLE not seen advertising on Windows | Unknown. Possibly needs pairing mode, or is disabled while USB is connected. |
 
-## Factory reset (from the manual)
+## Factory reset (located in CubeSuite for Windows)
 
-The manual says factory settings can be restored "in the computer software"
-(CubeSuite for Windows/macOS). This implies the firmware keeps factory presets
-(names, IRs, EQ) somewhere on the device, separate from the 32 user slots. The
-command is not in the Android app code and has not been located in the Windows
-CubeSuite binary yet. Locating it would allow recovering the original factory IRs
-of slots 1–14, which differ from the manual on this unit (see
-[hardware.md](hardware.md)). Sending it would overwrite all 32 slots, so take a
-`backup` first.
+The manual says factory settings can be restored "in the computer software".
+Static analysis of CubeSuite V2.8.10 for Windows (32-bit Qt5, `CubeSuite.exe`)
+shows that **the factory data is on the host, not in the pedal**. Function
+addresses below are for that build. (from app code; the result is verified on
+the device.)
+
+| Step | Code | What it does |
+|---|---|---|
+| Button handler | `0x4D3F90` | Confirmation dialog: "Are you sure you want to Restore all factory IR?". It allocates a 0x40000-byte buffer. |
+| Loader | `0x4D3320` | Loads `bin/%1.bin`, a file next to the executable, into the buffer. It reports "Recovery failure! Configuration file loss!" if the file is missing. |
+| Action (lambda) | `0x4D1AD0` | Loops `esi = 0x70000000 … 0x7003F000` step `0x1000`, calling `0x5063A0(type=5, addr)`. Then it calls `0x506590(type=5, addr=0x70000000, buf, len=0x40000)`. |
+| `0x5063A0` → `0x507770` | Frame builder | Writes `00 59 21 05 00 00 <type> <addr4> <~sum>`. This is **CMD 0x21 ERASE** of one 4 KiB sector. |
+
+So "Restore all factory IR" works in two steps:
+1. Erase 64 sectors (256 KiB) of the preset flash window at type 5 / 0x70000000.
+2. Write the 256 KiB file `bin/BOR.bin` (262,144 B = 32 × 8192, dated
+   2024-03-07) back into that window.
+
+Findings:
+
+- **`bin/BOR.bin` is the factory image.** Its 32 blocks use the normal preset
+  layout ('patch', 'CAB\0', 2048-sample IR, EQ). The names match the manual's
+  preset list (1 TweedDeluxe … 32 Work 4050 2 BASS). (verified)
+- **Type 5 / 0x70000000–0x7003FFFF is the raw preset flash**, slot *i* at
+  `0x70000000 + i·8192`. It is readable with normal 0x23 reads. A full 256 KiB
+  read matched a select-based backup byte for byte. (verified)
+- On this unit, slots 15–32 were byte-identical to `BOR.bin` and slots 1–14
+  differed (custom bass cabs). (verified)
+- **Restored 2026-10-08.** Slots 1–14 were restored from `BOR.bin` with the
+  toolkit's normal path: select, write working copy, refresh, save, then
+  reselect and verify. **No erase and no raw-flash write** were used. A
+  subsequent raw read of all 256 KiB was identical to `BOR.bin`. The previous
+  content of slots 1–14 is in the automatic backup `backups/20261008-205252/`
+  (and `dumps/backup_full/`). (verified)
+
+The toolkit never sends 0x21 and never writes the 0x7xxxxxxx window. Restoring
+slot by slot through the save path gives the same result without the risk of a
+power loss between erase and write. `BOR.bin` is M-VAVE's file and is not
+redistributed here. Get it from the official CubeSuite download (`bin/BOR.bin`).
 
 ## Next steps if firmware work is wanted
 

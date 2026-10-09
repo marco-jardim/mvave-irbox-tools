@@ -527,3 +527,16 @@ RX       00 59 23 28 02 00 05 00 00 00 80 20 02 00 <544 B> cs
 * Whether re-selecting the active slot reloads it from flash.
 * Whether unsaved edits survive a power cycle (expected not).
 * BLE transport on real hardware.
+
+## Addendum: raw preset flash window (verified on device, 2026-10-08)
+
+| Type | Address | Length | Access | Meaning |
+|---|---|---|---|---|
+| 5 | `0x70000000 + i*8192` | 8192 per slot (256 KiB total) | read (0x23, up to 1000 B per request) | Raw flash copy of slot *i*, same layout as the preset block. Reading does not change the active slot or the working copy. |
+
+The official CubeSuite for Windows uses this window for "Restore all factory IR":
+1. Erase 64 × 4 KiB sectors (CMD 0x21, type 5, `0x70000000`–`0x7003F000`).
+2. Write `bin/BOR.bin` there.
+
+This toolkit only **reads** the window (`backup --raw`, `factory-list --compare`)
+and never erases or writes it. See [firmware.md](firmware.md).

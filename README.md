@@ -74,6 +74,8 @@ uv run python scripts/irbox_tool.py query                 # device name/firmware
 uv run python scripts/irbox_tool.py info                  # active slot + all slot names
 uv run python scripts/irbox_tool.py dump --out dumps/now  # working copy: preset.json, preset_raw.bin, ir.wav, names.json
 uv run python scripts/irbox_tool.py backup backups/manual # every slot + name table
+uv run python scripts/irbox_tool.py backup backups/fast --raw  # same files, read from the raw flash window (~8 s, no slot switching)
+uv run python scripts/irbox_tool.py factory-list path/to/CubeSuite/bin/BOR.bin --compare  # factory image vs device
 uv run python scripts/irbox_tool.py ir-export --slot 24 matchless.wav
 ```
 
@@ -109,6 +111,19 @@ uv run python scripts/irbox_tool.py ir-load my_cab.wav --channel left --trim-sil
 `lpf`, with `--freq HZ`, `--gain DB` (±12 dB in 0.1 dB steps), `--q Q`
 (0.1–16), and `--enable` / `--disable`. Bands only take effect while `eq on`.
 `ir-load` does not turn the cab on; it warns if the cab is off.
+
+### Factory presets
+
+M-VAVE's factory image is `bin/BOR.bin` inside the official CubeSuite download
+(Windows/macOS). This project does not redistribute it. `factory-restore` writes
+it back slot by slot through the normal save path. It never uses the erase
+command or raw flash writes, which the official app does use. See
+[docs/firmware.md](docs/firmware.md).
+
+```
+uv run python scripts/irbox_tool.py factory-restore path/to/BOR.bin --yes            # only slots that differ
+uv run python scripts/irbox_tool.py factory-restore path/to/BOR.bin --slot 1 --yes   # one slot
+```
 
 ### Persistent (writes flash)
 

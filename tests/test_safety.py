@@ -34,13 +34,13 @@ def test_cli_exposes_no_raw_or_erase_commands():
 
     sub = irbox_tool.build_parser()._subparsers._group_actions[0]
     assert set(sub.choices) == {
-        "scan", "midi-ports", "query", "info", "dump", "backup", "ir-export",
+        "scan", "midi-ports", "query", "info", "dump", "backup", "ir-export", "factory-list",
         "select", "volume", "cab", "eq", "eq-band", "ir-load",
-        "save", "rename", "ir-upload", "restore",
+        "save", "rename", "ir-upload", "restore", "factory-restore",
     }
 
 
-@pytest.mark.parametrize("command", ["save", "rename", "ir-upload", "restore"])
+@pytest.mark.parametrize("command", ["save", "rename", "ir-upload", "restore", "factory-restore"])
 def test_flash_commands_have_yes_and_backup_flags(command):
     import irbox_tool
 
@@ -73,6 +73,37 @@ def test_device_layer_refuses_erase_frames():
         with pytest.raises(ble.ForbiddenOperation):
             box.write(type_, addr, b"\x00")
     assert rec.sent == []
+
+
+@pytest.mark.parametrize(
+    "type_,addr,data",
+    [
+        (5, 0x70000000, b"\x00"),
+        (5, 0x70000000, bytes(173)),
+        (5, 0x70000000 + 7 * 8192, bytes(8192)),
+        (5, 0x7003F000, bytes(4096)),
+        (5, 0x7003FFFF, b"\xff"),
+        (5, 0x7FFFFFFF, b"\x00"),
+        (4, 0x70000000, b"\x00"),
+        (0, 0x70000000, b"\x00"),
+    ],
+    ids=lambda v: f"{len(v)}B" if isinstance(v, bytes) else repr(v),
+)
+def test_raw_flash_window_is_not_writable(type_, addr, data):
+    from irbox.device import check_write_target
+
+    with pytest.raises(ble.ForbiddenOperation):
+        check_write_target(type_, addr, data)
+
+
+def test_factory_help_names_the_image_source():
+    import irbox_tool
+
+    sub = irbox_tool.build_parser()._subparsers._group_actions[0]
+    for name in ("factory-list", "factory-restore"):
+        text = " ".join(sub.choices[name].format_help().split())  # undo line wrapping
+        assert "bin/BOR.bin" in text and "CubeSuite" in text, name
+        assert "Windows/macOS" in text and "not redistributed" in text, name
 
 
 def test_cli_defaults_to_midi_transport():

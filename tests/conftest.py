@@ -18,6 +18,8 @@ SAVE_BASE = 0xF0000000
 REFRESH = 0xA0000000
 NAMES = 0x80000000
 CURRENT = 0x20000000
+RAW_FLASH = 0x70000000  # type 5, slot i at RAW_FLASH + i * 8192 (read-only window)
+RAW_FLASH_LEN = 32 * 8192
 
 
 def frame(cmd: int, body: bytes) -> bytes:
@@ -68,6 +70,10 @@ class FakeIRBoxHW:
 
     def name_table(self) -> bytes:
         return b"".join(bytes(blk[:17]) for blk in self.flash)
+
+    def raw_flash(self) -> bytes:
+        """The 256 KiB raw flash window: slot i at offset i * 8192."""
+        return b"".join(bytes(blk) for blk in self.flash)
 
     # -- request log helpers ---------------------------------------------
     def frames(self, cmd: int) -> list[tuple[int, int, bytes]]:
@@ -126,6 +132,9 @@ class FakeIRBoxHW:
             data = bytes([self.active])
         elif type_ == 5 and addr >= NAMES and addr < NAMES + 544:
             data = (self.name_table() + bytes(n))[:n]  # offset is ignored
+        elif type_ == 5 and RAW_FLASH <= addr and addr + n <= RAW_FLASH + RAW_FLASH_LEN:
+            off = addr - RAW_FLASH
+            data = self.raw_flash()[off : off + n]
         elif type_ == 5 and addr + n <= 8192:
             data = bytes(self.working[addr : addr + n])
         else:
