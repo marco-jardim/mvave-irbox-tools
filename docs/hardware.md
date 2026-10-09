@@ -177,3 +177,9 @@ Properties of the stored IRs (**verified on device**, from the full backup):
 | Active slot | yes | **verified on device** |
 | Saved slot content (name, IR, EQ, volume) | yes | **verified on device** |
 | Unsaved working-copy edits | expected no | **inferred** |
+
+### USB playback reaches the analog outputs, unprocessed (verified 2026-10-08)
+
+- A 1 kHz tone at -30 dBFS sent to the IR Box USB playback device (`scripts/play.py`) was heard on a mixing desk connected to the 1/4" output. (verified, listening)
+- Pink noise sounded the same through preset 01 (Telephone, 300 Hz–3.4 kHz) and preset 24 (Matchless ES212). USB playback is therefore mixed into the outputs **after** the IR/EQ, matching the manual's note that USB audio volume is not controllable. (verified, listening)
+- The IR Box therefore works as a plain USB sound card for the PC (backing tracks to a PA or headphones), but **it cannot process PC audio**: no reamping through the IR. USB capture carries the processed instrument plus the looped-back USB playback. Any measurement that drives external gear from USB playback and records it back must subtract that loopback.
